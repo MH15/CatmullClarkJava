@@ -11,19 +11,28 @@ import java.util.stream.Collectors;
 public class CCsubdivide {
 
     public static void main(String[] args) {
-        String inputFilename = "data/cubeT.off";
+        String inputFilename = "data/cubeQ.off";
+//        String inputFilename = "data/quad5A.off";
 //        String inputFilename = "data/torus-isov0.1-quads.off";
         var oldMesh = new HalfEdgeMeshA();
         var reader = new OffFileReaderA();
         reader.OpenAndReadFile(inputFilename, oldMesh);
 
+        int steps = 3;
 
-        var newMesh = subdivide(oldMesh);
-//        newMesh = subdivide(newMesh);
-//        newMesh = subdivide(newMesh);
+        if (steps > 0) {
 
-        var writer = new OffFileWriterA();
-        writer.OpenAndWriteFile("data/test.off", newMesh);
+            var newMesh = subdivide(oldMesh);
+            for (int i = 1; i < steps; i++) {
+                newMesh = subdivide(newMesh);
+
+            }
+            var writer = new OffFileWriterA();
+            writer.OpenAndWriteFile("data/test.off", newMesh);
+        } else {
+            var writer = new OffFileWriterA();
+            writer.OpenAndWriteFile("data/test.off", oldMesh);
+        }
 
 
     }
@@ -66,44 +75,86 @@ public class CCsubdivide {
 
             var edges = getEdgesOfCell(cell);
             for (var edge : edges) {
+
+
                 int edgeIndex = edge.Index();
                 VertexBase fromVertex = edge.FromVertex();
 
                 int oldVertexIndex = fromVertex.Index();
-//                System.out.println("searching for " + vertexIndex);
-
-//                int expectedVertexIndex =
 
                 if (createdOriginals.containsKey(oldVertexIndex)) {
                     cellVertIndices.get(cellIndex).add(createdOriginals.get(oldVertexIndex));
                 } else {
-                    int n = fromVertex.NumHalfEdgesFrom();
-                    var e0 = fromVertex.KthHalfEdgeFrom(0);
-                    var e1 = fromVertex.KthHalfEdgeFrom(1);
-                    var e2 = fromVertex.KthHalfEdgeFrom(2);
+                    if (!edge.IsBoundary()) {
+                        int n = fromVertex.NumHalfEdgesFrom();
 
-                    var f0 = facePointEdges.get(e0.Index());
-                    var f1 = facePointEdges.get(e1.Index());
-                    var f2 = facePointEdges.get(e2.Index());
+                        float[][] rArray = new float[n][3];
 
-                    var F = divCoord(sumCoords(f0.coord, f1.coord, f2.coord), 3);
+                        float[][] fArray = new float[n][3];
+                        for (int i = 0; i < n; i++) {
+                            var e = fromVertex.KthHalfEdgeFrom(i);
+                            fArray[i] = facePointEdges.get(e.Index()).coord;
+                            rArray[i] = averageCoords(fromVertex.coord, e.ToVertex().coord);
+                        }
 
-                    var s0 = averageCoords(fromVertex.coord, e0.ToVertex().coord);
-                    var s1 = averageCoords(fromVertex.coord, e1.ToVertex().coord);
-                    var s2 = averageCoords(fromVertex.coord, e2.ToVertex().coord);
-
-                    var R = sumCoords(s0, s1, s2);
-                    var R2 = divCoord(mulCoord(R, 2), 3);
-
-                    var FplusR2 = sumCoords(F, R2);
-
-                    float p[] = divCoord(FplusR2, 3);
+                        var F = averageCoords(fArray);
+                        var R = averageCoords(rArray);
 
 
-//                    int newFromVertIndex = createVertexAtPoint(newMesh, p);
-                    int newFromVertIndex = createVertexAtPoint(newMesh, fromVertex.coord);
-                    cellVertIndices.get(cellIndex).add(newFromVertIndex);
-                    createdOriginals.put(oldVertexIndex, newFromVertIndex);
+                        float m1 = (n - 3) / (float) (n);
+                        float m2 = 1 / (float) (n);
+                        float m3 = 2 / (float) (n);
+
+                        float[] weightedOriginalCoords = mulCoord(fromVertex.coord, m1);
+                        float[] weightedFacePoints = mulCoord(F, m2);
+                        float[] weightedEdgePoints = mulCoord(R, m3);
+
+                        float[] newPoint = sumCoords(weightedOriginalCoords, weightedFacePoints, weightedEdgePoints);
+
+                        int newFromVertIndex = createVertexAtPoint(newMesh, newPoint);
+
+                        cellVertIndices.get(cellIndex).add(newFromVertIndex);
+                        createdOriginals.put(oldVertexIndex, newFromVertIndex);
+                    } else {
+                        int n = fromVertex.NumHalfEdgesFrom();
+
+                        float[][] eArray = new float[n][3];
+                        int eArrayCount = n;
+
+                        float[][] fArray = new float[n][3];
+                        for (int i = 0; i < n; i++) {
+                            var e = fromVertex.KthHalfEdgeFrom(i);
+                            if (e.IsBoundary()) {
+                                eArrayCount--;
+                            }
+
+                            fArray[i] = facePointEdges.get(e.Index()).coord;
+                            eArray[i] = averageCoords(fromVertex.coord, e.ToVertex().coord);
+                        }
+
+                        float[][] eArrayWeCareAbout = Arrays.copyOfRange(eArray, 0, eArrayCount);
+
+                        var F = divCoord(sumCoords(fArray), eArrayCount);
+                        var E = divCoord(sumCoords(eArrayWeCareAbout), eArrayCount);
+                        System.out.println(eArrayCount);
+
+
+                        float m1 = (n - 3) / (float) (n);
+                        float m2 = 1 / (float) (eArrayCount);
+                        float m3 = 2 / (float) (eArrayCount);
+
+                        float[] weightedOriginalCoords = mulCoord(fromVertex.coord, m1);
+                        float[] weightedFacePoints = mulCoord(F, m2);
+                        float[] weightedEdgePoints = mulCoord(E, m3);
+
+                        float[] newPoint = averageCoords(fromVertex.coord, E);
+
+                        int newFromVertIndex = createVertexAtPoint(newMesh, newPoint);
+
+                        System.out.println(Arrays.toString(E));
+                        cellVertIndices.get(cellIndex).add(newFromVertIndex);
+                        createdOriginals.put(oldVertexIndex, newFromVertIndex);
+                    }
                 }
 
 
@@ -117,10 +168,14 @@ public class CCsubdivide {
 
                     float newCoords[] = averageCoords(startCoords, endCoords);
 
-                    if (facePointB != null) {
-                        newCoords = averageCoords(startCoords, endCoords, facePointA.coord, facePointB.coord);
-                    } else {
-                        newCoords = averageCoords(startCoords, endCoords, facePointA.coord);
+                    // "for the edges that are on the border of a hole, the edge point is just the middle of the edge."
+                    if (!edge.IsBoundary()) {
+
+                        if (facePointB != null) {
+                            newCoords = averageCoords(startCoords, endCoords, facePointA.coord, facePointB.coord);
+                        } else {
+                            newCoords = averageCoords(startCoords, endCoords, facePointA.coord);
+                        }
                     }
 
                     int newVertIndex = createVertexAtPoint(newMesh, newCoords);
@@ -134,19 +189,16 @@ public class CCsubdivide {
                 }
             }
 
-//            System.out.println(cellVertIndices);
-
-            int numVerts = cellVertIndices.size();
 
         }
 
-        for (var cellIndex : oldMesh.CellIndices()) {
+        for (
+                var cellIndex : oldMesh.CellIndices()) {
             var cell = oldMesh.Cell(cellIndex);
 
             var verts = cellVertIndices.get(cellIndex);
 
             int numVerts = verts.size();
-            System.out.println("cellVertIndices size: " + numVerts);
 
             int offset = numVerts * 2 - 2;
             for (int i = 1; i < verts.size(); i += 2) {
@@ -155,15 +207,10 @@ public class CCsubdivide {
                 int v1 = verts.get((i - 1) % numVerts);
                 int v2 = verts.get((i + 0) % numVerts);
                 int v3 = cellIndexToFacePointIndex.get(cellIndex);
-                System.out.printf("%d -> [%d,%d,%d,%d]%n", i, v0, v1, v2, v3);
                 createCell(newMesh, v0, v1, v2, v3);
 
             }
-//            break;
         }
-        System.out.println("create");
-//        createCell(newMesh, 13, 6, 7, 0);
-//        createCell(newMesh, 7, 8, 9, 0);
         return newMesh;
     }
 
