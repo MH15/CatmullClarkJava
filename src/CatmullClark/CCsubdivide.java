@@ -1,40 +1,57 @@
 package CatmullClark;
 
 import osu.halfEdgeMesh.*;
+import picocli.CommandLine;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
+import java.util.*;
+import java.util.concurrent.Callable;
 import java.util.stream.Collectors;
 
-public class CCsubdivide {
+@CommandLine.Command(name = "CCsubdivide", mixinStandardHelpOptions = true, version = "0.1",
+        description = "Subdivide an OFF file using the Catmull-Clark algorithm.")
+public class CCsubdivide implements Callable<Integer> {
 
-    public static void main(String[] args) {
-        String inputFilename = "data/cubeQ.off";
-//        String inputFilename = "data/quad5A.off";
-//        String inputFilename = "data/torus-isov0.1-quads.off";
+    @CommandLine.Parameters(index = "0", description = "Input file in .off format.", paramLabel = "<input .off file>")
+    private String filename;
+
+
+    @CommandLine.Option(names = {"-n", "-num_iter"}, description = "integer 1 or greater")
+    private int n;
+
+    @Override
+    public Integer call() {
+        String outputFilename = "out.off";
+
         var oldMesh = new HalfEdgeMeshA();
         var reader = new OffFileReaderA();
-        reader.OpenAndReadFile(inputFilename, oldMesh);
+        reader.OpenAndReadFile(filename, oldMesh);
 
-        int steps = 3;
 
-        if (steps > 0) {
-
+        if (n > 0) {
+            System.out.println("Iteration 0");
             var newMesh = subdivide(oldMesh);
-            for (int i = 1; i < steps; i++) {
-                newMesh = subdivide(newMesh);
+            checkMesh(newMesh);
 
+            for (int i = 1; i < n; i++) {
+                System.out.println("Iteration " + i);
+                newMesh = subdivide(newMesh);
+                checkMesh(newMesh);
             }
+
             var writer = new OffFileWriterA();
-            writer.OpenAndWriteFile("data/test.off", newMesh);
+            writer.OpenAndWriteFile(outputFilename, newMesh);
         } else {
             var writer = new OffFileWriterA();
-            writer.OpenAndWriteFile("data/test.off", oldMesh);
+            writer.OpenAndWriteFile(outputFilename, oldMesh);
         }
 
+        return 0;
+    }
 
+    public static void main(String[] args) {
+        // Parse command line options with Picocli
+        int exitCode = new CommandLine(new CCsubdivide()).execute(args);
+        System.exit(exitCode);
     }
 
     static HalfEdgeMeshA subdivide(HalfEdgeMeshA oldMesh) {
@@ -49,6 +66,7 @@ public class CCsubdivide {
         // Cell index to face point
         var cellIndexToFacePointIndex = new HashMap<Integer, Integer>();
 
+        // Create the face points for each cell
         for (var cellIndex : oldMesh.CellIndices()) {
             var cell = oldMesh.Cell(cellIndex);
 
@@ -82,91 +100,38 @@ public class CCsubdivide {
 
                 int oldVertexIndex = fromVertex.Index();
 
-                if (createdOriginals.containsKey(oldVertexIndex)) {
+                // If vertex is on the boundary, don't move it
+//                if (edge.IsBoundary() || edge.PrevHalfEdgeInCell().IsBoundary()) {
+                if (fromVertex.KthHalfEdgeFrom(0).IsBoundary() && !createdOriginals.containsKey(oldVertexIndex)) {
+                    int newFromVertIndex = createVertexAtPoint(newMesh, fromVertex.coord);
+
+                    cellVertIndices.get(cellIndex).add(newFromVertIndex);
+                    createdOriginals.put(oldVertexIndex, newFromVertIndex);
+
+                }
+                // If the point has already been created, retrieve it
+                else if (createdOriginals.containsKey(oldVertexIndex)) {
                     cellVertIndices.get(cellIndex).add(createdOriginals.get(oldVertexIndex));
-                } else {
-                    if (!edge.IsBoundary()) {
-                        int n = fromVertex.NumHalfEdgesFrom();
+                }
+                // Otherwise, need to calculate new point position
+                else {
+                    float[] newPoint = findNewVertexPoints(fromVertex, facePointEdges);
+                    int newFromVertIndex = createVertexAtPoint(newMesh, newPoint);
 
-                        float[][] rArray = new float[n][3];
-
-                        float[][] fArray = new float[n][3];
-                        for (int i = 0; i < n; i++) {
-                            var e = fromVertex.KthHalfEdgeFrom(i);
-                            fArray[i] = facePointEdges.get(e.Index()).coord;
-                            rArray[i] = averageCoords(fromVertex.coord, e.ToVertex().coord);
-                        }
-
-                        var F = averageCoords(fArray);
-                        var R = averageCoords(rArray);
-
-
-                        float m1 = (n - 3) / (float) (n);
-                        float m2 = 1 / (float) (n);
-                        float m3 = 2 / (float) (n);
-
-                        float[] weightedOriginalCoords = mulCoord(fromVertex.coord, m1);
-                        float[] weightedFacePoints = mulCoord(F, m2);
-                        float[] weightedEdgePoints = mulCoord(R, m3);
-
-                        float[] newPoint = sumCoords(weightedOriginalCoords, weightedFacePoints, weightedEdgePoints);
-
-                        int newFromVertIndex = createVertexAtPoint(newMesh, newPoint);
-
-                        cellVertIndices.get(cellIndex).add(newFromVertIndex);
-                        createdOriginals.put(oldVertexIndex, newFromVertIndex);
-                    } else {
-                        int n = fromVertex.NumHalfEdgesFrom();
-
-                        float[][] eArray = new float[n][3];
-                        int eArrayCount = n;
-
-                        float[][] fArray = new float[n][3];
-                        for (int i = 0; i < n; i++) {
-                            var e = fromVertex.KthHalfEdgeFrom(i);
-                            if (e.IsBoundary()) {
-                                eArrayCount--;
-                            }
-
-                            fArray[i] = facePointEdges.get(e.Index()).coord;
-                            eArray[i] = averageCoords(fromVertex.coord, e.ToVertex().coord);
-                        }
-
-                        float[][] eArrayWeCareAbout = Arrays.copyOfRange(eArray, 0, eArrayCount);
-
-                        var F = divCoord(sumCoords(fArray), eArrayCount);
-                        var E = divCoord(sumCoords(eArrayWeCareAbout), eArrayCount);
-                        System.out.println(eArrayCount);
-
-
-                        float m1 = (n - 3) / (float) (n);
-                        float m2 = 1 / (float) (eArrayCount);
-                        float m3 = 2 / (float) (eArrayCount);
-
-                        float[] weightedOriginalCoords = mulCoord(fromVertex.coord, m1);
-                        float[] weightedFacePoints = mulCoord(F, m2);
-                        float[] weightedEdgePoints = mulCoord(E, m3);
-
-                        float[] newPoint = averageCoords(fromVertex.coord, E);
-
-                        int newFromVertIndex = createVertexAtPoint(newMesh, newPoint);
-
-                        System.out.println(Arrays.toString(E));
-                        cellVertIndices.get(cellIndex).add(newFromVertIndex);
-                        createdOriginals.put(oldVertexIndex, newFromVertIndex);
-                    }
+                    cellVertIndices.get(cellIndex).add(newFromVertIndex);
+                    createdOriginals.put(oldVertexIndex, newFromVertIndex);
                 }
 
 
                 int oppositeIndex = edge.NextHalfEdgeAroundEdge().Index();
                 if (!splitEdges.containsKey(edgeIndex)) {
-                    float startCoords[] = fromVertex.coord;
-                    float endCoords[] = edge.ToVertex().coord;
+                    float[] startCoords = fromVertex.coord;
+                    float[] endCoords = edge.ToVertex().coord;
 
                     var facePointA = facePointEdges.get(edgeIndex);
                     var facePointB = facePointEdges.get(oppositeIndex);
 
-                    float newCoords[] = averageCoords(startCoords, endCoords);
+                    float[] newCoords = averageCoords(startCoords, endCoords);
 
                     // "for the edges that are on the border of a hole, the edge point is just the middle of the edge."
                     if (!edge.IsBoundary()) {
@@ -192,28 +157,98 @@ public class CCsubdivide {
 
         }
 
-        for (
-                var cellIndex : oldMesh.CellIndices()) {
-            var cell = oldMesh.Cell(cellIndex);
-
+        // Add the faces
+        for (var cellIndex : oldMesh.CellIndices()) {
             var verts = cellVertIndices.get(cellIndex);
-
-            int numVerts = verts.size();
-
-            int offset = numVerts * 2 - 2;
+            int offset = verts.size() * 2 - 2;
             for (int i = 1; i < verts.size(); i += 2) {
-//                int v0 = verts.get((i + 14) % numVerts);
-                int v0 = verts.get((i + offset) % numVerts);
-                int v1 = verts.get((i - 1) % numVerts);
-                int v2 = verts.get((i + 0) % numVerts);
+                int v0 = verts.get((i + offset) % verts.size());
+                int v1 = verts.get((i - 1) % verts.size());
+                int v2 = verts.get((i) % verts.size());
                 int v3 = cellIndexToFacePointIndex.get(cellIndex);
                 createCell(newMesh, v0, v1, v2, v3);
-
             }
         }
         return newMesh;
     }
 
+    /**
+     * Validate created mesh
+     *
+     * @param mesh mesh to check
+     */
+    static void checkMesh(HalfEdgeMeshA mesh) {
+        var manifold_info = mesh.CheckManifold();
+
+        var error_info = mesh.CheckAll();
+        if (error_info.FlagError()) {
+            System.err.println("Error detected in mesh data structure.");
+            if (error_info.Message() != null && !(error_info.Message().equals(""))) {
+                System.err.println(error_info.Message());
+            }
+            System.exit(-1);
+        }
+
+        if (!manifold_info.FlagManifold()) {
+            if (!manifold_info.FlagManifoldVertices()) {
+                int iv = manifold_info.VertexIndex();
+                System.err.println
+                        ("Warning: Non manifold vertex " +
+                                iv + ".");
+            }
+
+            if (!manifold_info.FlagManifoldEdges()) {
+                int ihalf_edge = manifold_info.HalfEdgeIndex();
+                osu.halfEdgeMesh.HalfEdgeBase half_edge = mesh.HalfEdge(ihalf_edge);
+                System.err.println
+                        ("Warning: Non manifold edge (" +
+                                half_edge.EndpointsStr(",") + ").");
+            }
+
+        }
+    }
+
+
+    /**
+     * Find the vertex locations of existing points, per the Catmull-Clark algorithm.
+     *
+     * @param fromVertex     current point on the old mesh
+     * @param facePointEdges mapping edge index to vertex index
+     * @return new coordinate position
+     */
+    static float[] findNewVertexPoints(VertexBase fromVertex, Map<Integer, VertexBase> facePointEdges) {
+        int n = fromVertex.NumHalfEdgesFrom();
+
+        float[][] rArray = new float[n][3];
+
+        float[][] fArray = new float[n][3];
+        for (int i = 0; i < n; i++) {
+            var e = fromVertex.KthHalfEdgeFrom(i);
+            fArray[i] = facePointEdges.get(e.Index()).coord;
+            rArray[i] = averageCoords(fromVertex.coord, e.ToVertex().coord);
+        }
+
+        var F = averageCoords(fArray);
+        var R = averageCoords(rArray);
+
+
+        float m1 = (n - 3) / (float) (n);
+        float m2 = 1 / (float) (n);
+        float m3 = 2 / (float) (n);
+
+        float[] weightedOriginalCoords = mulCoord(fromVertex.coord, m1);
+        float[] weightedFacePoints = mulCoord(F, m2);
+        float[] weightedEdgePoints = mulCoord(R, m3);
+
+        return sumCoords(weightedOriginalCoords, weightedFacePoints, weightedEdgePoints);
+    }
+
+    /**
+     * Add a new cell to the mesh
+     *
+     * @param mesh   mesh the cell is added to
+     * @param vIndex one or more vertices to form the cell from
+     */
     static void createCell(HalfEdgeMeshA mesh, int... vIndex) {
         int cellIndex = mesh.MaxCellIndex() + 1;
 
@@ -226,6 +261,13 @@ public class CCsubdivide {
     }
 
 
+    /**
+     * Return the coordinates multiplied by a scalar
+     *
+     * @param a      coordinate
+     * @param scalar float
+     * @return new coordinates
+     */
     static float[] mulCoord(float[] a, float scalar) {
         float[] result = {0, 0, 0};
         for (int j = 0; j < 3; j++) {
@@ -234,14 +276,13 @@ public class CCsubdivide {
         return result;
     }
 
-    static float[] divCoord(float[] a, float scalar) {
-        float[] result = {0, 0, 0};
-        for (int j = 0; j < 3; j++) {
-            result[j] = a[j] / scalar;
-        }
-        return result;
-    }
 
+    /**
+     * Sum a list of float[3]
+     *
+     * @param a one or more coordinates
+     * @return sum value
+     */
     static float[] sumCoords(float[]... a) {
         float[] result = {0, 0, 0};
         for (float[] floats : a) {
@@ -252,6 +293,12 @@ public class CCsubdivide {
         return result;
     }
 
+    /**
+     * Average a list of float[3]
+     *
+     * @param a one or more coordinates
+     * @return averaged value
+     */
     static float[] averageCoords(float[]... a) {
         float[] result = sumCoords(a);
         result[0] /= a.length;
@@ -260,6 +307,13 @@ public class CCsubdivide {
         return result;
     }
 
+    /**
+     * Walk around the half-edges in a cell and build
+     * an ordered list of all edges in said cell.
+     *
+     * @param cell the face
+     * @return list of edges surrounding the face
+     */
     static List<HalfEdgeBase> getEdgesOfCell(CellBase cell) {
         // Gather all edges of the cell
         ArrayList<HalfEdgeBase> edgesOfCell = new ArrayList<>();
@@ -274,6 +328,13 @@ public class CCsubdivide {
         return edgesOfCell;
     }
 
+    /**
+     * Add a vertex at the average of a set of points.
+     *
+     * @param mesh  mesh to add vertex to
+     * @param edges edges to average
+     * @return index of new point
+     */
     static int addFacePoint(HalfEdgeMeshA mesh, List<HalfEdgeBase> edges) {
         int numEdges = edges.size();
 
@@ -291,6 +352,13 @@ public class CCsubdivide {
         return createVertexAtPoint(mesh, coords);
     }
 
+    /**
+     * Create a new vertex in the mesh.
+     *
+     * @param mesh   mesh to add vertex to
+     * @param coords where to add the vertex
+     * @return index of newly created vertex
+     */
     static int createVertexAtPoint(HalfEdgeMeshA mesh, float[] coords) {
         try {
             mesh.AddVertices(0);
@@ -302,4 +370,6 @@ public class CCsubdivide {
         }
         return -1;
     }
+
+
 }
